@@ -9,7 +9,7 @@ type Status='todo'|'doing'|'blocked'|'done'
 type Priority='urgent'|'high'|'medium'|'low'
 type Project={id:string;name:string;color:string;user_id:string}
 type Task={id:string;title:string;description:string;status:Status;priority:Priority;project_id:string|null;user_id:string;created_at:string;position:number|null}
-const statuses:{id:Status;name:string;dot:string}[]=[{id:'todo',name:'To Do',dot:'#a9b3cc'},{id:'doing',name:'In Bearbeitung',dot:'#76a9ff'},{id:'blocked',name:'Blockiert',dot:'#ff9d86'},{id:'done',name:'Erledigt',dot:'#65d7ad'}]
+const statuses:{id:Status;name:string;dot:string}[]=[{id:'todo',name:'To Do',dot:'#a9b3cc'},{id:'doing',name:'In Bearbeitung',dot:'#76a9ff'},{id:'done',name:'Erledigt',dot:'#65d7ad'},{id:'blocked',name:'Blockiert',dot:'#ff9d86'}]
 const priorities:{id:Priority;name:string;color:string}[]=[{id:'urgent',name:'Dringend',color:'#ff727d'},{id:'high',name:'Hoch',color:'#ffad6b'},{id:'medium',name:'Mittel',color:'#83aaff'},{id:'low',name:'Niedrig',color:'#a2abbf'}]
 const blank={title:'',description:'',status:'todo' as Status,priority:'medium' as Priority,project_id:''}
 export default function Page(){
