@@ -18,6 +18,8 @@ create table if not exists public.tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+-- Auch für bestehende Installationen mit dem ursprünglichen Schema.
+alter table public.tasks add column if not exists position integer;
 create index if not exists tasks_user_status_idx on public.tasks(user_id,status);
 create index if not exists projects_user_idx on public.projects(user_id);
 alter table public.projects enable row level security;

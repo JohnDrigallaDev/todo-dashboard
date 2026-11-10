@@ -11,6 +11,11 @@ type Project={id:string;name:string;color:string;user_id:string}
 type Task={id:string;title:string;description:string;status:Status;priority:Priority;project_id:string|null;user_id:string;created_at:string;position:number|null}
 const statuses:{id:Status;name:string;dot:string}[]=[{id:'todo',name:'To Do',dot:'#a9b3cc'},{id:'doing',name:'In Bearbeitung',dot:'#76a9ff'},{id:'done',name:'Erledigt',dot:'#65d7ad'},{id:'blocked',name:'Blockiert',dot:'#ff9d86'}]
 const priorities:{id:Priority;name:string;color:string}[]=[{id:'urgent',name:'Dringend',color:'#ff727d'},{id:'high',name:'Hoch',color:'#ffad6b'},{id:'medium',name:'Mittel',color:'#83aaff'},{id:'low',name:'Niedrig',color:'#a2abbf'}]
+function compareTasks(a:Task,b:Task){
+ const positionDifference=(a.position??Number.MAX_SAFE_INTEGER)-(b.position??Number.MAX_SAFE_INTEGER)
+ const creationDifference=Date.parse(a.created_at)-Date.parse(b.created_at)
+ return positionDifference||(a.position==null?creationDifference:-creationDifference)||a.id.localeCompare(b.id)
+}
 const blank={title:'',description:'',status:'todo' as Status,priority:'medium' as Priority,project_id:''}
 export default function Page(){
  const [session,setSession]=useState<Session|null>(null),[authReady,setAuthReady]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false)
@@ -23,9 +28,46 @@ export default function Page(){
  async function login(e:React.FormEvent){e.preventDefault();setBusy(true);setError('');const {error}=await supabase().auth.signInWithPassword({email,password});if(error)setError(error.message);setBusy(false)}
  function openTask(t?:Task){setEditing(t?.id||null);setForm(t?{title:t.title,description:t.description,status:t.status,priority:t.priority,project_id:t.project_id||''}:{...blank,project_id:projects.some(p=>p.id===filter)?filter:''});setModal('task');setError('')}
  function openProject(p?:Project){setEditing(p?.id||null);setProjectName(p?.name||'');setProjectColor(p?.color||'#8b5cf6');setModal('project');setError('')}
- async function saveTask(e:React.FormEvent){e.preventDefault();if(!session||!form.title.trim())return;setBusy(true);setError('');const payload={title:form.title.trim(),description:form.description,status:form.status,priority:form.priority,project_id:form.project_id||null};const db=supabase();const result=editing?await db.from('tasks').update(payload).eq('id',editing).eq('user_id',session.user.id):await db.from('tasks').insert({...payload,user_id:session.user.id});if(result.error)setError(result.error.message);else{setModal(null);await load()}setBusy(false)}
+ async function saveTask(e:React.FormEvent){
+  e.preventDefault()
+  if(!session||busy||!form.title.trim())return
+  setBusy(true)
+  setError('')
+  const payload={title:form.title.trim(),description:form.description,status:form.status,priority:form.priority,project_id:form.project_id||null}
+  const db=supabase()
+  try{
+   const firstPosition=tasks.reduce((first,task)=>task.status===form.status?Math.min(first,task.position??0):first,0)
+   const result=editing
+    ?await db.from('tasks').update(payload).eq('id',editing).eq('user_id',session.user.id)
+    :await db.from('tasks').insert({...payload,user_id:session.user.id,position:firstPosition-1000})
+   if(result.error)throw result.error
+   setModal(null)
+   await load()
+  }catch(e){setError((e as Error).message)}
+  finally{setBusy(false)}
+ }
  async function saveProject(e:React.FormEvent){e.preventDefault();if(!session||!projectName.trim())return;setBusy(true);setError('');const payload={name:projectName.trim(),color:projectColor};const db=supabase();const result=editing?await db.from('projects').update(payload).eq('id',editing).eq('user_id',session.user.id):await db.from('projects').insert({...payload,user_id:session.user.id});if(result.error)setError(result.error.message);else{setModal(null);await load()}setBusy(false)}
- async function remove(kind:'tasks'|'projects',id:string){if(!confirm(kind==='tasks'?'Aufgabe wirklich löschen?':'Projekt löschen? Aufgaben bleiben ohne Projekt erhalten.'))return;const {error}=await supabase().from(kind).delete().eq('id',id).eq('user_id',session!.user.id);if(error)setError(error.message);else{if(kind==='projects'&&filter===id)setFilter('all');setModal(null);await load()}}
+ async function remove(kind:'tasks'|'projects',id:string){
+  if(!session)return
+  const question=kind==='tasks'
+   ?'Aufgabe dauerhaft löschen?'
+   :'Projekt löschen? Aufgaben bleiben ohne Projekt erhalten.'
+  if(!confirm(question))return
+  setError('')
+  try{
+   const {data,error}=await supabase().from(kind).delete().eq('id',id).eq('user_id',session.user.id).select('id').maybeSingle()
+   if(error)throw error
+   if(!data){
+    await load()
+    setError('Der Eintrag konnte nicht gelöscht werden.')
+    return
+   }
+   if(kind==='tasks')setTasks(current=>current.filter(task=>task.id!==id))
+   if(kind==='projects'&&filter===id)setFilter('all')
+   setModal(null)
+   await load()
+  }catch(e){setError((e as Error).message)}
+ }
  // Persist the manual ordering for each Kanban column.
  // The target card determines whether the dragged task lands above or below it.
  async function move(id:string,status:Status,targetId?:string,below=false){
@@ -33,7 +75,7 @@ export default function Page(){
   const moving=tasks.find(t=>t.id===id)
   if(!moving||targetId===id)return
   const previous=tasks
-  const ordered=[...tasks].sort((a,b)=>(a.position??Number.MAX_SAFE_INTEGER)-(b.position??Number.MAX_SAFE_INTEGER)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime())
+  const ordered=[...tasks].sort(compareTasks)
   const destination=ordered.filter(t=>t.status===status&&t.id!==id)
   const index=targetId?destination.findIndex(t=>t.id===targetId):-1
   destination.splice(index<0?destination.length:index+(below?1:0),0,{...moving,status})
@@ -52,7 +94,7 @@ export default function Page(){
    await load()
   }catch(e){setTasks(previous);setError('Reihenfolge konnte nicht gespeichert werden: '+(e as Error).message);await load()}
  }
- const visible=useMemo(()=>tasks.filter(t=>(filter==='all'||t.project_id===filter||(filter==='none'&&!t.project_id))&&(t.title+' '+t.description).toLowerCase().includes(search.toLowerCase())).sort((a,b)=>(a.position??Number.MAX_SAFE_INTEGER)-(b.position??Number.MAX_SAFE_INTEGER)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime()),[tasks,filter,search])
+ const visible=useMemo(()=>tasks.filter(t=>(filter==='all'||t.project_id===filter||(filter==='none'&&!t.project_id))&&(t.title+' '+t.description).toLowerCase().includes(search.toLowerCase())).sort(compareTasks),[tasks,filter,search])
  if(!authReady)return <main className="min-h-screen grid place-items-center muted">Glassboard wird geladen …</main>
  if(!session)return <main className="min-h-screen flex items-center justify-center p-5"><form onSubmit={login} className="glass rounded-3xl p-8 w-full max-w-md relative"><div className="text-4xl mb-4">✦</div><h1 className="text-3xl font-bold mb-2">Glassboard</h1><p className="muted mb-7">Dein privater Workspace. Melde dich mit deinem Supabase-Benutzer an.</p><label className="text-sm muted">E-Mail</label><input className="field mt-2 mb-4" type="email" required value={email} onChange={e=>setEmail(e.target.value)}/><label className="text-sm muted">Passwort</label><input className="field mt-2 mb-5" type="password" required value={password} onChange={e=>setPassword(e.target.value)}/><button disabled={busy} className="btn primary w-full">{busy?'Bitte warten …':'Anmelden'}</button>{error&&<p className="text-red-400 text-sm mt-4">{error}</p>}<p className="muted text-xs mt-5">Benutzer einmalig in Supabase → Authentication → Users anlegen. Keine öffentliche Registrierung.</p></form></main>
  return <main className="relative mx-auto max-w-[1700px] p-4 sm:p-7 lg:p-10">
@@ -79,7 +121,11 @@ export default function Page(){
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            setDragging(null);
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           }}
  onDragOverCapture={e=>{e.preventDefault();e.stopPropagation();e.dataTransfer.dropEffect='move'}}
- onDropCapture={e=>{e.preventDefault();e.stopPropagation();const id=e.dataTransfer.getData('text/plain')||dragging;if(id&&id!==t.id){const rect=e.currentTarget.getBoundingClientRect();void move(id,s.id,t.id,e.clientY>rect.top+rect.height/2)}setDragging(null)}} className="glass rounded-2xl p-4 cursor-grab active:cursor-grabbing group" onClick={()=>openTask(t)}><div className="flex justify-between items-center gap-2 mb-3"><span className="pill" style={{color:priority.color}}><span style={{background:priority.color}} className="inline-block h-1.5 w-1.5 rounded-full mr-1.5"/>{priority.name}</span><GripVertical className="muted opacity-40 group-hover:opacity-100" size={15}/></div><h3 className="font-semibold leading-snug break-words">{t.title}</h3>{t.description&&<p className="muted text-sm mt-2 line-clamp-3 break-words">{t.description}</p>}<div className="mt-4 flex items-center justify-between gap-2">{project?<span className="pill truncate max-w-full" style={{color:project.color}}>● {project.name}</span>:<span className="muted text-xs">Ohne Projekt</span>}<span className="muted text-xs shrink-0">{new Date(t.created_at).toLocaleDateString('de-DE',{day:'2-digit',month:'short'})}</span></div><select aria-label="Status ändern" value={t.status} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();void move(t.id,e.target.value as Status)}} className="field !py-2 text-xs mt-3"><option value="todo">To Do</option><option value="doing">In Bearbeitung</option><option value="blocked">Blockiert</option><option value="done">Erledigt</option></select></motion.article>})}</AnimatePresence><button onClick={()=>{openTask();setForm(v=>({...v,status:s.id}))}} className="w-full py-3 rounded-2xl muted text-sm hover:bg-white/10 transition flex justify-center items-center gap-2"><Plus size={15}/> Aufgabe hinzufügen</button></div></section>)}</div>
+ onDropCapture={e=>{e.preventDefault();e.stopPropagation();const id=e.dataTransfer.getData('text/plain')||dragging;if(id&&id!==t.id){const rect=e.currentTarget.getBoundingClientRect();void move(id,s.id,t.id,e.clientY>rect.top+rect.height/2)}setDragging(null)}} data-status={t.status} className="glass task-card rounded-2xl p-4 cursor-grab active:cursor-grabbing group" onClick={()=>openTask(t)}><div className="flex justify-between items-center gap-2 mb-3"><span className="pill" style={{color:priority.color}}><span style={{background:priority.color}} className="inline-block h-1.5 w-1.5 rounded-full mr-1.5"/>{priority.name}</span><div className="flex shrink-0 items-center gap-2">
+ <button type="button" className="btn !p-1.5 muted hover:text-red-500" aria-label={`Aufgabe „${t.title}“ löschen`} title="Aufgabe löschen" onClick={e=>{e.stopPropagation();void remove('tasks',t.id)}}>
+  <Trash2 size={15} aria-hidden="true"/>
+ </button>
+ <GripVertical className="muted opacity-40 group-hover:opacity-100" size={15}/></div></div><h3 className="font-semibold leading-snug break-words">{t.title}</h3>{t.description&&<p className="muted text-sm mt-2 line-clamp-3 break-words">{t.description}</p>}<div className="mt-4 flex items-center justify-between gap-2">{project?<span className="pill truncate max-w-full" style={{color:project.color}}>● {project.name}</span>:<span className="muted text-xs">Ohne Projekt</span>}<span className="muted text-xs shrink-0">{new Date(t.created_at).toLocaleDateString('de-DE',{day:'2-digit',month:'short'})}</span></div><select aria-label="Status ändern" value={t.status} onClick={e=>e.stopPropagation()} onChange={e=>{e.stopPropagation();void move(t.id,e.target.value as Status)}} className="field !py-2 text-xs mt-3"><option value="todo">To Do</option><option value="doing">In Bearbeitung</option><option value="blocked">Blockiert</option><option value="done">Erledigt</option></select></motion.article>})}</AnimatePresence><button onClick={()=>{openTask();setForm(v=>({...v,status:s.id}))}} className="w-full py-3 rounded-2xl muted text-sm hover:bg-white/10 transition flex justify-center items-center gap-2"><Plus size={15}/> Aufgabe hinzufügen</button></div></section>)}</div>
  <div className="mt-8 flex flex-wrap items-center gap-3 muted text-sm"><CheckCircle2 size={16}/> {tasks.filter(t=>t.status==='done').length} erledigt <span>·</span> Aufgaben per Drag & Drop oder Status-Auswahl verschieben <span>·</span> Änderungen werden gespeichert</div>
  <AnimatePresence>{modal&&<motion.div className="modal-backdrop" initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0}} onMouseDown={e=>{if(e.target===e.currentTarget)setModal(null)}}><motion.div className="glass modal" initial={{scale:.95,y:15}} animate={{scale:1,y:0}} exit={{scale:.95,y:15}}><div className="flex justify-between items-center mb-6"><h2 className="text-xl font-semibold">{editing?'Bearbeiten':modal==='task'?'Neue Aufgabe':'Neues Projekt'}</h2><button onClick={()=>setModal(null)} className="btn !p-2"><X size={18}/></button></div>{modal==='task'?<form onSubmit={saveTask} className="space-y-4"><div><label className="text-sm muted">Titel *</label><input className="field mt-2" required maxLength={200} autoFocus value={form.title} onChange={e=>setForm({...form,title:e.target.value})} placeholder="Was steht an?"/></div><div><label className="text-sm muted">Beschreibung</label><textarea className="field mt-2 min-h-[100px]" value={form.description} onChange={e=>setForm({...form,description:e.target.value})} placeholder="Optional …"/></div><div className="grid grid-cols-2 gap-3"><div><label className="text-sm muted">Status</label><select className="field mt-2" value={form.status} onChange={e=>setForm({...form,status:e.target.value as Status})}>{statuses.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</select></div><div><label className="text-sm muted">Priorität</label><select className="field mt-2" value={form.priority} onChange={e=>setForm({...form,priority:e.target.value as Priority})}>{priorities.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div></div><div><label className="text-sm muted">Projekt-Tag</label><select className="field mt-2" value={form.project_id} onChange={e=>setForm({...form,project_id:e.target.value})}><option value="">Kein Projekt</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></div><div className="flex justify-between pt-2 gap-2">{editing?<button type="button" className="btn text-red-400 flex gap-2 items-center" onClick={()=>void remove('tasks',editing)}><Trash2 size={15}/> Löschen</button>:<span/>}<button disabled={busy} className="btn primary">{busy?'Speichern …':'Speichern'}</button></div></form>:<form onSubmit={saveProject} className="space-y-4"><div><label className="text-sm muted">Projektname *</label><input autoFocus className="field mt-2" maxLength={100} required value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="z. B. WAW Website"/></div><div><label className="text-sm muted">Tag-Farbe</label><input type="color" className="block mt-2 h-11 w-20 cursor-pointer" value={projectColor} onChange={e=>setProjectColor(e.target.value)}/></div><p className="muted text-sm">Projekte erscheinen nur als Tags an Aufgaben, nicht als eigene Kanban-Karten.</p><div className="flex justify-between gap-2 pt-2">{editing?<button type="button" className="btn text-red-400 flex items-center gap-2" onClick={()=>void remove('projects',editing)}><Trash2 size={15}/> Löschen</button>:<span/>}<button disabled={busy} className="btn primary">{busy?'Speichern …':'Speichern'}</button></div></form>}{error&&<p className="text-red-400 text-sm mt-4">{error}</p>}</motion.div></motion.div>}</AnimatePresence>
  {error&&!modal&&<div className="fixed bottom-4 right-4 z-30 glass rounded-xl p-4 text-sm text-red-400 max-w-sm" onClick={()=>setError('')}>{error} <span className="ml-2 cursor-pointer">×</span></div>}
